@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package test;
+
+option go_package = "github.com/WingT/go-grpc-cache/test_pb";
+
+service TestService {
+    rpc TestStreamEnable (TestRequest) returns (stream TestResponse);
+    rpc TestUnaryEnable (TestRequest) returns (TestResponse);
+    rpc TestStreamDisable (TestRequest) returns (stream TestResponse);
+    rpc TestUnaryDisable (TestRequest) returns (TestResponse);
+}
+
+message TestRequest {
+    bool enable = 1;
+    int64 count = 2;
+    string key = 3;
+}
+message TestResponse {
+    bytes data = 1;
+}
