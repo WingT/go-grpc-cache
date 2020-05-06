@@ -10,6 +10,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"reflect"
@@ -71,6 +72,10 @@ func StreamServerInterceptor(opt Option) grpc.StreamServerInterceptor {
 		if err != nil {
 			return err
 		}
+		err = ws.Finish()
+		if err != nil {
+			return err
+		}
 		if !ws.RespValid() {
 			return nil
 		}
@@ -109,6 +114,9 @@ func UnaryServerInterceptor(opt Option) grpc.UnaryServerInterceptor {
 		if err != nil {
 			return nil, err
 		}
+		if len(cacheData) > serverConf.MaxSize {
+			return resp, nil
+		}
 		err = opt.Backend().Put(reqConfig.Key, cacheData)
 		return resp, nil
 	}
@@ -125,7 +133,7 @@ type wrappedServerStream struct {
 	recordResp bool
 	maxSize    int
 	peekedMsg  []interface{}
-	respData   []byte
+	pb         *proto.Buffer
 	buffer     *bytes.Buffer
 	respWriter *gzip.Writer
 	truncated  bool
@@ -145,10 +153,10 @@ func (s *wrappedServerStream) RecvMsg(m interface{}) error {
 		s.peekedMsg = s.peekedMsg[1:]
 		return nil
 	}
-	return s.RecvMsg(m)
+	return s.ServerStream.RecvMsg(m)
 }
 func (s *wrappedServerStream) SendMsg(m interface{}) error {
-	err := s.SendMsg(m)
+	err := s.ServerStream.SendMsg(m)
 	if err != nil {
 		s.err = err
 		return err
@@ -156,7 +164,11 @@ func (s *wrappedServerStream) SendMsg(m interface{}) error {
 	if !s.recordResp || s.truncated || s.err != nil {
 		return nil
 	}
-	data, err := proto.Marshal(m.(proto.Message))
+	if s.pb == nil {
+		s.pb = proto.NewBuffer(nil)
+	}
+	s.pb.Reset()
+	err = s.pb.EncodeMessage(m.(proto.Message))
 	if err != nil {
 		s.err = err
 		return err
@@ -165,9 +177,7 @@ func (s *wrappedServerStream) SendMsg(m interface{}) error {
 		s.buffer = bytes.NewBuffer(nil)
 		s.respWriter = gzip.NewWriter(s.buffer)
 	}
-	s.buffer.Reset()
-	s.respWriter.Reset(s.buffer)
-	_, err = s.respWriter.Write(data)
+	_, err = s.respWriter.Write(s.pb.Bytes())
 	if err != nil {
 		s.err = err
 		return err
@@ -177,12 +187,10 @@ func (s *wrappedServerStream) SendMsg(m interface{}) error {
 		s.err = err
 		return err
 	}
-	if len(s.respData)+s.buffer.Len() > s.maxSize {
+	if s.buffer.Len() > s.maxSize {
 		s.truncated = true
-	} else {
-		s.respData = append(s.respData, s.buffer.Bytes()...)
 	}
-	return err
+	return nil
 }
 
 func (s *wrappedServerStream) RespValid() bool {
@@ -203,20 +211,38 @@ func (s *wrappedServerStream) SetMaxSize(m int) {
 	s.maxSize = m
 }
 
+func (s *wrappedServerStream) Finish() error {
+	if s.respWriter != nil {
+		err := s.respWriter.Close()
+		if err != nil {
+			s.err = err
+			return fmt.Errorf("compress finish failed: %w", err)
+		}
+		if s.buffer.Len() > s.maxSize {
+			s.truncated = true
+		}
+	}
+	return nil
+}
+
 func writeStream(stream grpc.ServerStream, compressedData []byte, m proto.Message) error {
 	reader, err := gzip.NewReader(bytes.NewBuffer(compressedData))
 	if err != nil {
-		return err
+		return fmt.Errorf("decompress init failed: %w", err)
 	}
 	data, err := ioutil.ReadAll(reader)
 	if err != nil {
-		return err
+		return fmt.Errorf("decompress failed: %w", err)
+	}
+	err = reader.Close()
+	if err != nil {
+		return fmt.Errorf("decompress finish failed: %w", err)
 	}
 	pb := proto.NewBuffer(data)
-	for i := 0; len(pb.Unread()) > 0; i++ {
+	for len(pb.Unread()) > 0 {
 		err = pb.DecodeMessage(m)
 		if err != nil {
-			return err
+			return fmt.Errorf("decode message failed: %w", err)
 		}
 		err = stream.SendMsg(m)
 		if err != nil {
@@ -227,19 +253,24 @@ func writeStream(stream grpc.ServerStream, compressedData []byte, m proto.Messag
 }
 
 func serializeMsg(m proto.Message) ([]byte, error) {
-	data, err := proto.Marshal(m)
+	pb := proto.NewBuffer(nil)
+	err := pb.EncodeMessage(m)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("encode message faild: %w", err)
 	}
 	buffer := bytes.NewBuffer(nil)
 	writer := gzip.NewWriter(buffer)
-	_, err = writer.Write(data)
+	_, err = writer.Write(pb.Bytes())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("compress message faild: %w", err)
 	}
 	err = writer.Flush()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("compress message flush faild: %w", err)
+	}
+	err = writer.Close()
+	if err != nil {
+		return nil, fmt.Errorf("compress message finish faild: %w", err)
 	}
 	return buffer.Bytes(), nil
 }
@@ -247,11 +278,20 @@ func serializeMsg(m proto.Message) ([]byte, error) {
 func deSerializeMsg(compressedData []byte, m proto.Message) error {
 	reader, err := gzip.NewReader(bytes.NewBuffer(compressedData))
 	if err != nil {
-		return err
+		return fmt.Errorf("decompress init failed: %w", err)
 	}
 	data, err := ioutil.ReadAll(reader)
 	if err != nil {
-		return err
+		return fmt.Errorf("decompress failed: %w", err)
 	}
-	return proto.Unmarshal(data, m)
+	err = reader.Close()
+	if err != nil {
+		return fmt.Errorf("decompress finish failed: %w", err)
+	}
+	pb := proto.NewBuffer(data)
+	err = pb.DecodeMessage(m)
+	if err != nil {
+		return fmt.Errorf("decode message failed: %w", err)
+	}
+	return nil
 }

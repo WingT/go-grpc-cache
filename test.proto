@@ -12,10 +12,11 @@ service TestService {
 }
 
 message TestRequest {
-    bool enable = 1;
-    int64 count = 2;
-    string key = 3;
+    bool enable = 1; // control req cache enable
+    int64 count = 2; // control resp size
+    string key = 3; // control cache key
 }
 message TestResponse {
     bytes data = 1;
+    int64 call_count = 2; // how many times underlying service was called
 }
