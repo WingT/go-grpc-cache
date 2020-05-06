@@ -76,26 +76,31 @@ func (s *testServer) TestUnaryDisable(ctx context.Context, req *test_pb.TestRequ
 	}, nil
 }
 
-const maxSize = 100
+const (
+	maxSize = 100
+	maxAge  = 100
+)
 
 type testCacheConfigOption struct {
 	backend cache.Backend
 }
 
-func (testCacheConfigOption) StreamConfig(info *grpc.StreamServerInfo) cache.Config {
-	return cache.Config{
+func (testCacheConfigOption) StreamConfig(info *grpc.StreamServerInfo) cache.ServerConfig {
+	return cache.ServerConfig{
 		Enabled: strings.HasSuffix(info.FullMethod, "Enable"),
 		MaxSize: maxSize,
+		MaxAge:  maxAge,
 	}
 }
-func (testCacheConfigOption) UnaryConfig(info *grpc.UnaryServerInfo) cache.Config {
-	return cache.Config{
+func (testCacheConfigOption) UnaryConfig(info *grpc.UnaryServerInfo) cache.ServerConfig {
+	return cache.ServerConfig{
 		Enabled: strings.HasSuffix(info.FullMethod, "Enable"),
 		MaxSize: maxSize,
+		MaxAge:  maxAge,
 	}
 }
-func (testCacheConfigOption) ReqConfig(req interface{}) cache.Config {
-	c := cache.Config{}
+func (testCacheConfigOption) ReqConfig(req interface{}) cache.ReqConfig {
+	c := cache.ReqConfig{}
 	switch r := req.(type) {
 	case *test_pb.TestRequest:
 		c.Enabled = r.Enable
@@ -106,23 +111,33 @@ func (testCacheConfigOption) ReqConfig(req interface{}) cache.Config {
 }
 func (o *testCacheConfigOption) Backend() cache.Backend {
 	if o.backend == nil {
-		o.backend = make(testCacheBackend)
+		o.backend = testCacheBackend{
+			contents: make(map[string][]byte),
+			configs:  make(map[string]cache.ServerConfig),
+		}
 	}
 	return o.backend
 }
 
-type testCacheBackend map[string][]byte
+type testCacheBackend struct {
+	contents map[string][]byte
+	configs  map[string]cache.ServerConfig
+}
 
-func (b testCacheBackend) Put(k string, v []byte) error {
-	b[k] = v
+func (b testCacheBackend) Put(k string, v []byte, config cache.ServerConfig) error {
+	b.contents[k] = v
+	b.configs[k] = config
 	return nil
 }
 func (b testCacheBackend) Get(k string) ([]byte, error) {
-	v, ok := b[k]
+	v, ok := b.contents[k]
 	if !ok {
 		return nil, cache.ErrCacheMiss
 	}
 	return v, nil
+}
+func (b testCacheBackend) getConfig(k string) cache.ServerConfig {
+	return b.configs[k]
 }
 
 func runTestServer(t *testing.T, opt *testCacheConfigOption) (string, func()) {

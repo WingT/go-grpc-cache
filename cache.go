@@ -23,19 +23,24 @@ import (
 
 var ErrCacheMiss = errors.New("cache miss")
 
-type Config struct {
-	Enabled bool   // ReqConfig overrides Stream/UnaryConfig
-	MaxSize int    // set by Stream/UnaryConfig in byte
-	Key     string // set by ReqConfig
+type ServerConfig struct {
+	Enabled bool // ReqConfig can override
+	MaxSize int  // in byte
+	MaxAge  int  // in seconds
+}
+
+type ReqConfig struct {
+	Enabled bool // Overrides ServerConfig
+	Key     string
 }
 type Backend interface {
-	Put(string, []byte) error
+	Put(string, []byte, ServerConfig) error
 	Get(string) ([]byte, error)
 }
 type Option interface {
-	StreamConfig(*grpc.StreamServerInfo) Config
-	UnaryConfig(*grpc.UnaryServerInfo) Config
-	ReqConfig(interface{}) Config
+	StreamConfig(*grpc.StreamServerInfo) ServerConfig
+	UnaryConfig(*grpc.UnaryServerInfo) ServerConfig
+	ReqConfig(interface{}) ReqConfig
 	Backend() Backend
 }
 
@@ -79,7 +84,7 @@ func StreamServerInterceptor(opt Option) grpc.StreamServerInterceptor {
 		if !ws.RespValid() {
 			return nil
 		}
-		err = opt.Backend().Put(reqConfig.Key, ws.RespData())
+		err = opt.Backend().Put(reqConfig.Key, ws.RespData(), serverConf)
 		return err
 	}
 }
@@ -117,7 +122,7 @@ func UnaryServerInterceptor(opt Option) grpc.UnaryServerInterceptor {
 		if len(cacheData) > serverConf.MaxSize {
 			return resp, nil
 		}
-		err = opt.Backend().Put(reqConfig.Key, cacheData)
+		err = opt.Backend().Put(reqConfig.Key, cacheData, serverConf)
 		return resp, nil
 	}
 }
