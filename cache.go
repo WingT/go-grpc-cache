@@ -23,30 +23,29 @@ import (
 
 var ErrCacheMiss = errors.New("cache miss")
 
-type ServerConfig struct {
+type MethodConfig struct {
 	Enabled bool // ReqConfig can override
 	MaxSize int  // in byte
 	MaxAge  int  // in seconds
 }
 
 type ReqConfig struct {
-	Enabled bool // Overrides ServerConfig
+	Enabled bool // Overrides MethodConfig
 	Key     string
 }
 type Backend interface {
-	Put(string, []byte, ServerConfig) error
+	Put(string, []byte, MethodConfig) error
 	Get(string) ([]byte, error)
 }
 type Option interface {
-	StreamConfig(*grpc.StreamServerInfo) ServerConfig
-	UnaryConfig(*grpc.UnaryServerInfo) ServerConfig
-	ReqConfig(interface{}) ReqConfig
+	MethodConfig(fullMethod string) MethodConfig
+	ReqConfig(fullMethod string, req interface{}) ReqConfig
 	Backend() Backend
 }
 
 func StreamServerInterceptor(opt Option) grpc.StreamServerInterceptor {
 	return func(srv interface{}, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		serverConf := opt.StreamConfig(info)
+		serverConf := opt.MethodConfig(info.FullMethod)
 		if !serverConf.Enabled {
 			return handler(srv, stream)
 		}
@@ -59,7 +58,7 @@ func StreamServerInterceptor(opt Option) grpc.StreamServerInterceptor {
 			}
 			return status.Errorf(codes.Internal, "failed getting initial request from caller: %v", err)
 		}
-		reqConfig := opt.ReqConfig(req)
+		reqConfig := opt.ReqConfig(info.FullMethod, req)
 		if !reqConfig.Enabled {
 			return handler(srv, ws)
 		}
@@ -91,11 +90,11 @@ func StreamServerInterceptor(opt Option) grpc.StreamServerInterceptor {
 
 func UnaryServerInterceptor(opt Option) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		serverConf := opt.UnaryConfig(info)
+		serverConf := opt.MethodConfig(info.FullMethod)
 		if !serverConf.Enabled {
 			return handler(ctx, req)
 		}
-		reqConfig := opt.ReqConfig(req)
+		reqConfig := opt.ReqConfig(info.FullMethod, req)
 		if !reqConfig.Enabled {
 			return handler(ctx, req)
 		}

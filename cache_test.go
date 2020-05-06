@@ -85,21 +85,14 @@ type testCacheConfigOption struct {
 	backend cache.Backend
 }
 
-func (testCacheConfigOption) StreamConfig(info *grpc.StreamServerInfo) cache.ServerConfig {
-	return cache.ServerConfig{
-		Enabled: strings.HasSuffix(info.FullMethod, "Enable"),
+func (testCacheConfigOption) MethodConfig(fullMethod string) cache.MethodConfig {
+	return cache.MethodConfig{
+		Enabled: strings.HasSuffix(fullMethod, "Enable"),
 		MaxSize: maxSize,
 		MaxAge:  maxAge,
 	}
 }
-func (testCacheConfigOption) UnaryConfig(info *grpc.UnaryServerInfo) cache.ServerConfig {
-	return cache.ServerConfig{
-		Enabled: strings.HasSuffix(info.FullMethod, "Enable"),
-		MaxSize: maxSize,
-		MaxAge:  maxAge,
-	}
-}
-func (testCacheConfigOption) ReqConfig(req interface{}) cache.ReqConfig {
+func (testCacheConfigOption) ReqConfig(fullMethod string, req interface{}) cache.ReqConfig {
 	c := cache.ReqConfig{}
 	switch r := req.(type) {
 	case *test_pb.TestRequest:
@@ -113,7 +106,7 @@ func (o *testCacheConfigOption) Backend() cache.Backend {
 	if o.backend == nil {
 		o.backend = testCacheBackend{
 			contents: make(map[string][]byte),
-			configs:  make(map[string]cache.ServerConfig),
+			configs:  make(map[string]cache.MethodConfig),
 		}
 	}
 	return o.backend
@@ -121,10 +114,10 @@ func (o *testCacheConfigOption) Backend() cache.Backend {
 
 type testCacheBackend struct {
 	contents map[string][]byte
-	configs  map[string]cache.ServerConfig
+	configs  map[string]cache.MethodConfig
 }
 
-func (b testCacheBackend) Put(k string, v []byte, config cache.ServerConfig) error {
+func (b testCacheBackend) Put(k string, v []byte, config cache.MethodConfig) error {
 	b.contents[k] = v
 	b.configs[k] = config
 	return nil
@@ -136,7 +129,7 @@ func (b testCacheBackend) Get(k string) ([]byte, error) {
 	}
 	return v, nil
 }
-func (b testCacheBackend) getConfig(k string) cache.ServerConfig {
+func (b testCacheBackend) getConfig(k string) cache.MethodConfig {
 	return b.configs[k]
 }
 
